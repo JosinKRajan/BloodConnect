@@ -11,7 +11,7 @@ const navLinks = [
   { label: 'Donor Portal', path: '/donor-login' },
 ]
 
-export default function Navbar() {
+export default function Navbar({ currentUser }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   return (
@@ -59,18 +59,26 @@ export default function Navbar() {
 
           {/* Desktop Nav */}
           <nav className="desktop-nav" aria-label="Primary Navigation">
-            {navLinks.map((item) => (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={({ isActive }) =>
-                  `nav-item ${isActive ? 'active' : ''} ${item.isSos ? 'nav-item-sos' : ''}`
-                }
-              >
-                {item.isSos && <span className="sos-pulse" />}
-                <span>{item.label}</span>
-              </NavLink>
-            ))}
+            {navLinks.map((item) => {
+              const isLogin = item.path === '/donor-login'
+              const label = isLogin && currentUser
+                ? `My Profile (${currentUser.group})`
+                : item.label
+
+              return (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  className={({ isActive }) =>
+                    `nav-item ${isActive ? 'active' : ''} ${item.isSos ? 'nav-item-sos' : ''} ${isLogin && currentUser ? 'nav-item-user' : ''}`
+                  }
+                >
+                  {item.isSos && <span className="sos-pulse" />}
+                  {isLogin && currentUser && <span className="user-active-dot" />}
+                  <span>{label}</span>
+                </NavLink>
+              )
+            })}
           </nav>
 
           {/* Action button */}
@@ -96,19 +104,27 @@ export default function Navbar() {
         {mobileMenuOpen && (
           <div className="mobile-drawer" role="navigation" aria-label="Mobile Navigation">
             <div className="mobile-links">
-              {navLinks.map((item) => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={({ isActive }) =>
-                    `mobile-link ${isActive ? 'active' : ''} ${item.isSos ? 'mobile-link-sos' : ''}`
-                  }
-                >
-                  <span>{item.label}</span>
-                  {item.isSos && <span className="mobile-sos-tag">Urgent</span>}
-                </NavLink>
-              ))}
+              {navLinks.map((item) => {
+                const isLogin = item.path === '/donor-login'
+                const label = isLogin && currentUser
+                  ? `My Profile (${currentUser.group})`
+                  : item.label
+
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={({ isActive }) =>
+                      `mobile-link ${isActive ? 'active' : ''} ${item.isSos ? 'mobile-link-sos' : ''}`
+                    }
+                  >
+                    {isLogin && currentUser && <span className="user-active-dot" />}
+                    <span>{label}</span>
+                    {item.isSos && <span className="mobile-sos-tag">Urgent</span>}
+                  </NavLink>
+                )
+              })}
               <div className="mobile-cta-wrap">
                 <Link
                   to="/request-blood"

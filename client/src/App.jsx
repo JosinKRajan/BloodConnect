@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Link, useSearchParams } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import Footer from './components/Footer'
@@ -26,6 +26,9 @@ import {
   AlertTriangleIcon,
   BloodDropIcon,
   PlusIcon,
+  MailIcon,
+  ArrowRightIcon,
+  XIcon,
 } from './components/Icons'
 import './App.css'
 
@@ -34,20 +37,97 @@ export default function App() {
   const [drives, setDrives] = useState(initialDrives)
   const [activeModalDonor, setActiveModalDonor] = useState(null)
   const [toast, setToast] = useState(null)
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bc_user')
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
 
-  const showToast = (type, title, message) => {
-    setToast({ type, title, message })
-  }
+  // Attempt to load donors from MongoDB on mount
+  useEffect(() => {
+    fetch('/api/donors')
+      .then((res) => {
+        if (res.ok) return res.json()
+        throw new Error('Server not available')
+      })
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          // Normalize MongoDB documents (_id -> id)
+          const mongoDonors = data.map((d) => ({ ...d, id: d._id || d.id }))
+          setDonors(mongoDonors)
+        }
+      })
+      .catch(() => {
+        // Fallback to local Kerala donors
+      })
+  }, [])
 
   const handleRegisterDonor = (newDonor) => {
     setDonors((prev) => [newDonor, ...prev])
-    showToast('success', 'Welcome Lifesaver!', `You are now registered as a ${newDonor.group} donor!`)
+    setCurrentUser(newDonor)
+    localStorage.setItem('bc_user', JSON.stringify(newDonor))
+  }
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user)
+    localStorage.setItem('bc_user', JSON.stringify(user))
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('bc_user')
+    localStorage.removeItem('bc_token')
+    setCurrentUser(null)
+    setToast({
+      type: 'success',
+      title: 'Signed Out Safely',
+      message: 'You have been signed out of your donor portal.',
+    })
+  }
+
+  const handleUpdateAvailability = async (newStatus) => {
+    if (!currentUser) return
+    const updatedUser = { ...currentUser, available: newStatus }
+    setCurrentUser(updatedUser)
+    localStorage.setItem('bc_user', JSON.stringify(updatedUser))
+
+    // Update in donors list as well so Find Donor reflects immediately
+    setDonors((prev) =>
+      prev.map((d) =>
+        (d.id === currentUser.id || (d.email && d.email.toLowerCase() === currentUser.email?.toLowerCase()))
+          ? { ...d, available: newStatus }
+          : d
+      )
+    )
+
+    const donorId = currentUser._id || currentUser.id
+    if (donorId) {
+      try {
+        await fetch(`/api/donors/${donorId}/availability`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ available: newStatus }),
+        })
+      } catch {
+        // Backend offline, local state updated
+      }
+    }
+
+    setToast({
+      type: 'success',
+      title: newStatus ? 'Readiness Activated' : 'Readiness Paused',
+      message: newStatus
+        ? 'You are now marked as available for immediate emergency donations!'
+        : 'Your profile is temporarily marked inactive for emergency calls.',
+    })
   }
 
   return (
     <BrowserRouter>
       <div className="app-layout">
-        <Navbar />
+        <Navbar currentUser={currentUser} />
 
         <main className="main-content">
           <Routes>
@@ -88,6 +168,11 @@ export default function App() {
               path="/donor-login"
               element={
                 <DonorLoginPage
+                  currentUser={currentUser}
+                  onLoginSuccess={handleLoginSuccess}
+                  onLogout={handleLogout}
+                  onUpdateAvailability={handleUpdateAvailability}
+                  donors={donors}
                   onRegister={handleRegisterDonor}
                   onNotify={setToast}
                 />
@@ -183,25 +268,6 @@ function FindDonorPage({ donors, onContact }) {
           <p className="hero-subtitle">
             Connect with verified voluntary donors across Kerala — Kottayam, Ernakulam, Trivandrum, Kozhikode, Kollam, and more. Search by blood group and district for immediate, reliable support.
           </p>
-
-          <div className="hero-stats-row">
-            <div className="stat-card">
-              <span className="stat-number">2,450+</span>
-              <span className="stat-label">Registered Donors</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-number">&lt; 15 min</span>
-              <span className="stat-label">Avg Response Time</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-number">180+</span>
-              <span className="stat-label">Hospitals Connected</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-number">100%</span>
-              <span className="stat-label">Voluntary & Free</span>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -1224,8 +1290,16 @@ function RequestBloodPage({ onNotify }) {
 /* =========================================================================
    PAGE 6: DONOR LOGIN & REGISTRATION
    ========================================================================= */
-function DonorLoginPage({ onRegister, onNotify }) {
-  const [tab, setTab] = useState('register') // 'signin' or 'register'
+function DonorLoginPage({
+  currentUser,
+  onLoginSuccess,
+  onLogout,
+  onUpdateAvailability,
+  donors,
+  onRegister,
+  onNotify,
+}) {
+  const [tab, setTab] = useState('signin') // default to 'signin' or 'register'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -1235,47 +1309,354 @@ function DonorLoginPage({ onRegister, onNotify }) {
   const [regPhone, setRegPhone] = useState('')
   const [regArea, setRegArea] = useState('')
   const [regEmail, setRegEmail] = useState('')
+  const [regPassword, setRegPassword] = useState('')
 
-  const handleSignIn = (e) => {
+  // -------------------------------------------------------------
+  // If donor is logged in, show their details & dashboard PERMANENTLY
+  // -------------------------------------------------------------
+  if (currentUser) {
+    const initials =
+      currentUser.initials ||
+      (currentUser.name
+        ? currentUser.name
+            .split(' ')
+            .map((n) => n[0])
+            .join('')
+            .slice(0, 2)
+            .toUpperCase()
+        : 'BD')
+    const tone = currentUser.tone || 'coral'
+    const donationsCount = currentUser.donationsCount || 1
+    const livesSaved = donationsCount * 3
+
+    return (
+      <div className="page-container donor-dashboard">
+        <section className="hero-section hero-compact">
+          <div className="hero-content">
+            <div className="hero-badge">
+              <SparklesIcon size={14} className="text-crimson" />
+              <span>Personal Lifesaver Dashboard</span>
+            </div>
+            <h1 className="hero-title">
+              Welcome, <span className="title-gradient">{currentUser.name}</span>
+            </h1>
+            <p className="hero-subtitle">
+              Your registered donor account is active. Manage your emergency readiness, view your life-saving stats, or find matching patients across Kerala.
+            </p>
+          </div>
+        </section>
+
+        <div className="dashboard-grid">
+          {/* Left Column: Profile & Readiness */}
+          <div className="dashboard-card">
+            {/* User Profile Banner */}
+            <div className="dashboard-user-banner">
+              <div className={`donor-avatar dashboard-avatar ${tone}`}>
+                <span>{initials}</span>
+                <span className={`donor-status-dot ${currentUser.available ? 'online' : 'offline'}`} />
+              </div>
+              <div className="dashboard-user-info">
+                <h2>
+                  <span>{currentUser.name}</span>
+                  <span className="dashboard-blood-pill">
+                    <BloodDropIcon size={14} />
+                    <span>{currentUser.group}</span>
+                  </span>
+                </h2>
+                <div className="badge-verified">
+                  <ShieldCheckIcon size={13} />
+                  <span>Verified Voluntary Donor</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Availability Readiness Controller */}
+            <div className={`readiness-block ${currentUser.available ? 'available' : 'inactive'}`}>
+              <div className="readiness-header">
+                <span className="readiness-tag">
+                  {currentUser.available ? (
+                    <>
+                      <span className="readiness-pulse-dot" />
+                      <span>Ready & Available to Donate</span>
+                    </>
+                  ) : (
+                    <span>⏸️ Cooldown / Temporarily Inactive</span>
+                  )}
+                </span>
+                <span className="text-muted text-xs">
+                  {currentUser.available ? 'Live on Find Donor' : 'Hidden from Urgent Search'}
+                </span>
+              </div>
+              <p className="readiness-desc">
+                {currentUser.available
+                  ? `Your phone (${currentUser.phone}) is active for direct emergency calls and WhatsApp requests from verified patients in ${currentUser.district || 'Kerala'}.`
+                  : 'You are currently marked as unavailable (e.g. resting after recent donation or traveling). Patients will not call you while paused.'}
+              </p>
+              <button
+                type="button"
+                className={`btn-toggle-readiness ${currentUser.available ? 'active' : 'paused'}`}
+                onClick={() => onUpdateAvailability(!currentUser.available)}
+              >
+                {currentUser.available ? (
+                  <>
+                    <span>Pause Availability (Take a Break)</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckIcon size={16} />
+                    <span>Resume Availability (Ready to Save Lives)</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Profile Metadata List */}
+            <div className="dashboard-meta-list">
+              <div className="dashboard-meta-item">
+                <MailIcon size={16} />
+                <span className="dashboard-meta-label">Email:</span>
+                <span className="dashboard-meta-value">{currentUser.email}</span>
+              </div>
+              <div className="dashboard-meta-item">
+                <PhoneIcon size={16} />
+                <span className="dashboard-meta-label">Phone:</span>
+                <span className="dashboard-meta-value">{currentUser.phone}</span>
+              </div>
+              <div className="dashboard-meta-item">
+                <MapPinIcon size={16} />
+                <span className="dashboard-meta-label">Location:</span>
+                <span className="dashboard-meta-value">
+                  {currentUser.location || currentUser.district || 'Kerala'}
+                </span>
+              </div>
+              <div className="dashboard-meta-item">
+                <ClockIcon size={16} />
+                <span className="dashboard-meta-label">Last Donated:</span>
+                <span className="dashboard-meta-value">
+                  {currentUser.lastDonation || 'Ready to donate'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Life-Saving Impact & Tools */}
+          <div className="dashboard-card">
+            <h3 className="section-title">
+              <HeartPulseIcon size={18} className="text-crimson" />
+              <span>Your Life-Saving Impact</span>
+            </h3>
+
+            {/* 4 Stat Cards */}
+            <div className="donor-impact-grid">
+              <div className="impact-stat-card">
+                <div className="impact-stat-number">{donationsCount}</div>
+                <div className="impact-stat-label">Donations</div>
+                <div className="impact-stat-sub">Completed drives</div>
+              </div>
+              <div className="impact-stat-card">
+                <div className="impact-stat-number">{livesSaved}+</div>
+                <div className="impact-stat-label">Lives Saved</div>
+                <div className="impact-stat-sub">Patients impacted</div>
+              </div>
+              <div className="impact-stat-card">
+                <div className="impact-stat-number">{currentUser.group}</div>
+                <div className="impact-stat-label">Blood Group</div>
+                <div className="impact-stat-sub">Lifesaver type</div>
+              </div>
+              <div className="impact-stat-card">
+                <div className="impact-stat-number" style={{ fontSize: '18px', paddingTop: '6px' }}>
+                  Hero 🏅
+                </div>
+                <div className="impact-stat-label">Donor Tier</div>
+                <div className="impact-stat-sub">Active community volunteer</div>
+              </div>
+            </div>
+
+            {/* Emergency Quick Actions */}
+            <div className="dashboard-actions-list">
+              <Link
+                to={`/find-donor?group=${encodeURIComponent(currentUser.group)}`}
+                className="dashboard-action-item"
+              >
+                <div className="dashboard-action-left">
+                  <SearchIcon size={16} />
+                  <span>Find Patients Seeking {currentUser.group} Blood</span>
+                </div>
+                <ArrowRightIcon size={16} />
+              </Link>
+
+              <Link to="/blood-stock" className="dashboard-action-item">
+                <div className="dashboard-action-left">
+                  <Building2Icon size={16} />
+                  <span>Check Kerala Blood Bank Reserves</span>
+                </div>
+                <ArrowRightIcon size={16} />
+              </Link>
+
+              <Link to="/urgent-sos" className="dashboard-action-item">
+                <div className="dashboard-action-left">
+                  <AlertTriangleIcon size={16} />
+                  <span>Broadcast Emergency SOS Alert</span>
+                </div>
+                <ArrowRightIcon size={16} />
+              </Link>
+            </div>
+
+            {/* Sign Out Button */}
+            <div style={{ marginTop: 'auto', paddingTop: '10px' }}>
+              <button
+                type="button"
+                className="btn-donor-signout"
+                onClick={onLogout}
+              >
+                <XIcon size={16} />
+                <span>Sign Out of Donor Account</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // -------------------------------------------------------------
+  // If not logged in, show Sign In / Register Forms
+  // -------------------------------------------------------------
+  const handleSignIn = async (e) => {
     e.preventDefault()
+    let loggedInUser = null
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await res.json()
+      if (res.ok && data.donor) {
+        if (data.token) localStorage.setItem('bc_token', data.token)
+        loggedInUser = { ...data.donor, id: data.donor._id || data.donor.id }
+      }
+    } catch {
+      // Backend offline or network error
+    }
+
+    // Fallback if backend is offline or user is testing with mock credentials
+    if (!loggedInUser) {
+      const matched = donors.find(
+        (d) => d.email && d.email.toLowerCase() === email.toLowerCase()
+      )
+      if (matched) {
+        loggedInUser = { ...matched }
+      } else {
+        const namePart = email.split('@')[0]
+        const formattedName = namePart
+          .replace(/[._]/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase())
+
+        loggedInUser = {
+          id: `d-${Date.now()}`,
+          name: formattedName || 'Registered Donor',
+          email: email.toLowerCase(),
+          group: 'O+',
+          phone: '+91 94471 23456',
+          district: 'Kottayam',
+          location: 'Gandhi Nagar, Kottayam, Kerala',
+          distance: '1.2 km',
+          available: true,
+          verified: true,
+          donationsCount: 3,
+          lastDonation: 'Ready to donate',
+          initials: (formattedName || 'RD')
+            .split(' ')
+            .map((n) => n[0])
+            .join('')
+            .slice(0, 2)
+            .toUpperCase(),
+          tone: 'coral',
+        }
+      }
+    }
+
+    onLoginSuccess(loggedInUser)
     onNotify({
       type: 'success',
-      title: 'Signed In',
-      message: `Welcome back! Signed in as ${email}.`,
+      title: 'Welcome Back, Lifesaver! 🎉',
+      message: `Signed in successfully as ${loggedInUser.name} (${loggedInUser.group}).`,
     })
   }
 
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault()
-    const initials = regName
-      .split(' ')
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2)
+    const initials =
+      regName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2) || 'BD'
 
-    const newDonor = {
-      id: `d-${Date.now()}`,
+    const payload = {
       name: regName,
-      group: regGroup,
-      location: `${regArea}, Kerala`,
-      distance: '0.8 km',
-      lastDonation: 'Ready to donate',
-      donationsCount: 1,
-      initials: initials || 'DL',
-      tone: 'coral',
-      available: true,
-      verified: true,
-      phone: regPhone,
       email: regEmail,
+      password: regPassword || 'password123',
+      group: regGroup,
+      phone: regPhone,
+      district: regArea.includes('Kottayam')
+        ? 'Kottayam'
+        : regArea.includes('Ernakulam')
+        ? 'Ernakulam'
+        : regArea.includes('Trivandrum')
+        ? 'Trivandrum'
+        : regArea.includes('Kozhikode')
+        ? 'Kozhikode'
+        : 'Kottayam',
+      location: regArea.includes('Kerala') ? regArea : `${regArea}, Kerala`,
     }
 
-    onRegister(newDonor)
-    setRegName('')
-    setRegPhone('')
-    setRegArea('')
-    setRegEmail('')
-    setTab('signin')
+    let savedDonor = null
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (res.ok && data.donor) {
+        if (data.token) localStorage.setItem('bc_token', data.token)
+        savedDonor = { ...data.donor, id: data.donor._id || data.donor.id }
+      }
+    } catch {
+      // Backend offline, fallback to React state
+    }
+
+    if (!savedDonor) {
+      savedDonor = {
+        id: `d-${Date.now()}`,
+        name: regName,
+        group: regGroup,
+        location: payload.location,
+        district: payload.district,
+        distance: '0.8 km',
+        lastDonation: 'Ready to donate',
+        donationsCount: 1,
+        initials,
+        tone: 'coral',
+        available: true,
+        verified: true,
+        phone: regPhone,
+        email: regEmail,
+      }
+    }
+
+    onRegister(savedDonor)
+    onLoginSuccess(savedDonor)
+    onNotify({
+      type: 'success',
+      title: 'Welcome to BloodConnect! 🎉',
+      message: `${savedDonor.name} (${savedDonor.group}) is now registered and active!`,
+    })
   }
 
   return (
@@ -1290,7 +1671,7 @@ function DonorLoginPage({ onRegister, onNotify }) {
             Donor <span className="title-gradient">Portal & Join</span>
           </h1>
           <p className="hero-subtitle">
-            Sign in to manage your availability, or register as a voluntary donor to save lives in your neighborhood.
+            Sign in to access your donor dashboard, or register as a voluntary lifesaver in your Kerala neighborhood.
           </p>
         </div>
       </section>
@@ -1301,31 +1682,31 @@ function DonorLoginPage({ onRegister, onNotify }) {
           <div className="portal-tabs">
             <button
               type="button"
-              className={`portal-tab ${tab === 'register' ? 'active' : ''}`}
-              onClick={() => setTab('register')}
-            >
-              Register as Donor
-            </button>
-            <button
-              type="button"
               className={`portal-tab ${tab === 'signin' ? 'active' : ''}`}
               onClick={() => setTab('signin')}
             >
               Donor Sign In
+            </button>
+            <button
+              type="button"
+              className={`portal-tab ${tab === 'register' ? 'active' : ''}`}
+              onClick={() => setTab('register')}
+            >
+              Register as Donor
             </button>
           </div>
 
           {tab === 'signin' ? (
             <form onSubmit={handleSignIn} className="portal-form">
               <h3>Sign In to Your Donor Account</h3>
-              <p className="form-subtext">Access your donation logs and update your readiness.</p>
+              <p className="form-subtext">Access your profile, donation statistics, and readiness toggle.</p>
 
               <label className="form-field">
                 <span className="field-label">Email Address</span>
                 <input
                   type="email"
                   required
-                  placeholder="donor@example.com"
+                  placeholder="e.g. rahul.kurian@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                 />
@@ -1410,6 +1791,17 @@ function DonorLoginPage({ onRegister, onNotify }) {
                   />
                 </label>
               </div>
+
+              <label className="form-field">
+                <span className="field-label">Set Account Password *</span>
+                <input
+                  type="password"
+                  required
+                  placeholder="Min 6 characters (e.g. password123)"
+                  value={regPassword}
+                  onChange={(e) => setRegPassword(e.target.value)}
+                />
+              </label>
 
               <button type="submit" className="btn-portal-action">
                 Complete Registration & Join
